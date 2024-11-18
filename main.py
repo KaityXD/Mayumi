@@ -8,7 +8,6 @@ from nextcord import *
 from colorama import init, Fore
 init(autoreset=True)
 
-# test pr
 
 bot = commands.Bot(intents=Intents.all(), help_command=None)
 
@@ -18,7 +17,7 @@ async def on_ready():
 
     total_slash_commands = len(bot.get_application_commands())
     total_cogs = len(bot.cogs)
-    print(Fore.LIGHTGREEN_EX + "\n-----------[Kaity Ez]-----------")
+    print(Fore.LIGHTGREEN_EX + "\n<-----------[ KaiTy_Ez ]----------->")
     print(Fore.GREEN + "\n🚀", Fore.BLUE + bot.user.name, Fore.GREEN + "is online!")
     print(Fore.GREEN + "🔧 Bot ID:", Fore.YELLOW + f"{bot.user.id}")
     print(Fore.GREEN + "🌐 Connected to", Fore.YELLOW + f"{len(bot.guilds)}", Fore.GREEN + "servers")
