@@ -9,7 +9,7 @@ from colorama import init, Fore
 init(autoreset=True)
 
 
-bot = commands.Bot(intents=Intents.all(), help_command=None)
+bot = commands.Bot(intents=Intents.all(), help_command=None, command_prefix='!')
 
 @bot.event
 async def on_ready():
