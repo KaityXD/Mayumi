@@ -28,7 +28,7 @@ async def on_ready():
 loaded_cogs = 0
 
 for filename in os.listdir('./cogs'):
-    if filename.endswith('_cog.py'):
+    if filename.endswith('.py'):
         module = f'cogs.{filename[:-3]}'
         bot.load_extension(module)
         loaded_cogs += 1
