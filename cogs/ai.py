@@ -1,244 +1,151 @@
 import nextcord
 from nextcord.ext import commands
-import sqlite3
-import json
-import asyncio
 import httpx
 import os
-from typing import Optional
-from pathlib import Path
-from contextlib import contextmanager
+from dotenv import load_dotenv
+import asyncio
+import aiosqlite
+from colorama import Fore, init
+from utils.config import GROQ_API_KEY
 
-class DatabaseManager:
-    def __init__(self, db_path: str = "bot.db"):
-        self.db_path = db_path
-        self.setup_database()
+# Initialize colorama for Windows compatibility
+init(autoreset=True)
 
-    def setup_database(self) -> None:
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS ai_channels (
-                    guild_id INTEGER PRIMARY KEY,
-                    channel_id INTEGER NOT NULL
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS message_history (
-                    message_id INTEGER PRIMARY KEY,
-                    guild_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    content TEXT NOT NULL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            conn.commit()
+# Load environment variables
+load_dotenv()
 
-    @contextmanager
-    def get_connection(self):
-        conn = sqlite3.connect(self.db_path)
-        try:
-            yield conn
-        finally:
-            conn.close()
-
-class Config:
-    def __init__(self, config_path: str = "config.json"):
-        self.config_path = Path(config_path)
-        self.load_config()
-
-    def load_config(self) -> None:
-        if self.config_path.exists():
-            with open(self.config_path, 'r') as f:
-                self._config = json.load(f)
-        else:
-            self._config = {
-                "model": "llama3-8b-8192",
-                "max_retries": 3,
-                "retry_delay": 1,
-                "message_timeout": 60,
-                "max_history": 10,
-                "bot_name": "Luna",
-                "bot_personalities": {
-                    "default": "You are Luna, a friendly and helpful AI assistant.",
-                    "professional": "You are Luna, a professional and efficient AI assistant focused on business matters.",
-                    "casual": "You are Luna, a casual and fun AI chatbot who loves making friends."
-                }
-            }
-            self.save_config()
-
-    def save_config(self) -> None:
-        with open(self.config_path, 'w') as f:
-            json.dump(self._config, f, indent=4)
-
-    def get(self, key: str, default=None):
-        return self._config.get(key, default)
-
-class GroqAPI:
-    def __init__(self):
-        self.api_key = os.getenv('GROQ_API_KEY')
-        self.client = httpx.AsyncClient()
-        self.base_url = "https://api.groq.com/v1/completions"
-
-    async def generate_completion(self, prompt: str, model: str) -> Optional[str]:
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model": model,
-            "prompt": prompt,
-            "max_tokens": 1000,
-            "temperature": 0.7
-        }
-
-        try:
-            async with self.client as client:
-                response = await client.post(
-                    self.base_url,
-                    headers=headers,
-                    json=data,
-                    timeout=30.0
-                )
-                response.raise_for_status()
-                return response.json()["choices"][0]["text"].strip()
-        except Exception:
-            return None
+GROQ_API_KEY = GROQ_API_KEY
 
 class AICog(commands.Cog):
-    def __init__(self, bot: commands.Bot):
+    def __init__(self, bot):
         self.bot = bot
-        self.db = DatabaseManager()
-        self.config = Config()
-        self.groq_api = GroqAPI()
-        self.message_cache = {}
-        self.current_personality = "default"
+        self.db_path = 'ai_responses.db'
+        self.auto_response_enabled = False
+        self.message_history = []  # Store up to 5 messages here
+        self.loop = asyncio.get_event_loop()
+        self.loop.create_task(self.setup_db())
 
-    @nextcord.slash_command(
-        name="setchannel",
-        description="Set the AI channel for this server"
-    )
-    @commands.has_permissions(administrator=True)
-    async def set_channel(self, interaction: nextcord.Interaction, channel: nextcord.TextChannel):
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT OR REPLACE INTO ai_channels (guild_id, channel_id) VALUES (?, ?)",
-                (interaction.guild_id, channel.id)
-            )
-            conn.commit()
-        await interaction.response.send_message(
-            f"AI channel set to {channel.mention}",
-            ephemeral=True
-        )
+    async def setup_db(self):
+        """Setup the database and ensure the tables exist."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute('''CREATE TABLE IF NOT EXISTS responses
+                                (user_id INTEGER, question TEXT, answer TEXT)''')
+            await db.execute('''CREATE TABLE IF NOT EXISTS guild_settings
+                                (guild_id INTEGER, channel_id INTEGER, auto_response_enabled BOOLEAN)''')
+            await db.commit()
 
-    @nextcord.slash_command(
-        name="rename",
-        description="Change the bot's name"
-    )
-    @commands.has_permissions(administrator=True)
-    async def rename(self, interaction: nextcord.Interaction, new_name: str):
-        try:
-            await interaction.guild.me.edit(nick=new_name)
-            self.config._config["bot_name"] = new_name
-            self.config.save_config()
-            await interaction.response.send_message(
-                f"✅ I've been renamed to {new_name}!",
-                ephemeral=True
-            )
-        except Exception:
-            await interaction.response.send_message(
-                "❌ Failed to change my name. Please check permissions.",
-                ephemeral=True
-            )
+    async def insert_response(self, user_id, question, answer):
+        """Insert a response into the database."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute('INSERT INTO responses (user_id, question, answer) VALUES (?, ?, ?)',
+                             (user_id, question, answer))
+            await db.commit()
 
-    @nextcord.slash_command(
-        name="personality",
-        description="Change the bot's personality"
-    )
-    @commands.has_permissions(administrator=True)
-    async def change_personality(
-        self,
-        interaction: nextcord.Interaction,
-        personality: str = nextcord.SlashOption(
-            name="type",
-            choices=["default", "professional", "casual"],
-            description="Choose the bot's personality"
-        )
-    ):
-        try:
-            self.current_personality = personality
-            await interaction.response.send_message(
-                f"✅ Personality changed to: {personality}",
-                ephemeral=True
-            )
-        except Exception:
-            await interaction.response.send_message(
-                "❌ Failed to change personality",
-                ephemeral=True
-            )
+    async def get_guild_settings(self, guild_id):
+        """Fetch the guild settings from the database."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute('SELECT channel_id, auto_response_enabled FROM guild_settings WHERE guild_id = ?',
+                                  (guild_id,)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return row
+                return None
 
-    async def generate_ai_response(self, prompt: str, retry_count: int = 0) -> Optional[str]:
-        personality = self.config.get("bot_personalities", {}).get(
-            self.current_personality,
-            self.config.get("bot_personalities", {}).get("default", "")
-        )
-        contextualized_prompt = f"{personality}\n\nUser: {prompt}"
+    async def set_guild_settings(self, guild_id, channel_id, auto_response_enabled):
+        """Set the guild settings in the database."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute('''INSERT OR REPLACE INTO guild_settings (guild_id, channel_id, auto_response_enabled)
+                                VALUES (?, ?, ?)''', (guild_id, channel_id, auto_response_enabled))
+            await db.commit()
 
-        try:
-            response = await self.groq_api.generate_completion(
-                prompt=contextualized_prompt,
-                model=self.config.get("model", "llama3-8b-8192")
-            )
-            if response:
-                return response
-            
-            if retry_count < self.config.get("max_retries", 3):
-                await asyncio.sleep(self.config.get("retry_delay", 1))
-                return await self.generate_ai_response(prompt, retry_count + 1)
-            return "I'm having trouble generating a response. Please try again later."
-            
-        except Exception:
-            return None
+    async def ask_ai(self, question: str):
+        """Send a request to the AI and return the response."""
+        payload = {
+            "model": "llama3-8b-8192",
+            "messages": [{"role": "user", "content": question}]
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {GROQ_API_KEY}"
+        }
+
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=headers,
+                    json=payload
+                )
+
+                response.raise_for_status()  # Will raise an HTTPStatusError for bad responses
+                data = response.json()
+                return data['choices'][0]['message']['content']
+            except httpx.RequestError as e:
+                print(Fore.RED + f"HTTP error occurred: {e}")
+                return "An error occurred while processing your request."
+            except httpx.HTTPStatusError as e:
+                print(Fore.RED + f"HTTP status error: {e}")
+                return "Error with API response. Please try again later."
+
+    @nextcord.slash_command(name="askai", description="Ask AI a question and get a response.")
+    async def ask_ai_command(self, interaction: nextcord.Interaction, question: str):
+        """Slash command to ask AI a question."""
+        answer = await self.ask_ai(question)
+
+        if answer:
+            await self.insert_response(interaction.user.id, question, answer)
+
+            # Store the question-answer pair in history, ensuring it doesn't exceed 5 items
+            self.message_history.append((question, answer))
+            if len(self.message_history) > 5:
+                self.message_history.pop(0)  # Remove the oldest message
+
+            print(Fore.GREEN + f"[ Ai ]" + Fore.WHITE + f" Successfully sent response message to {Fore.YELLOW}{interaction.user.display_name} ({interaction.user.name})")
+            await interaction.response.send_message(f"**AI Response**: {answer}")
+        else:
+            print(Fore.RED + f"[ Ai ] Error processing request for {interaction.user.display_name} ({interaction.user.name})")
+            await interaction.response.send_message("There was an error processing your request.")
+
+    @nextcord.slash_command(name="setup", description="Configure auto-response for AI in a specific channel.")
+    async def setup(self, interaction: nextcord.Interaction, channel: nextcord.TextChannel, enable: bool):
+        """Slash command to enable/disable auto-response for a specific channel."""
+        guild_settings = await self.get_guild_settings(interaction.guild.id)
+
+        if guild_settings:
+            current_channel_id, current_auto_response = guild_settings
+            if current_channel_id != channel.id:
+                await interaction.response.send_message(f"Auto-response is not set for this channel. Please configure it in the correct channel.")
+                return
+
+        await self.set_guild_settings(interaction.guild.id, channel.id, enable)
+        status = "enabled" if enable else "disabled"
+        print(Fore.GREEN + f"[ Ai ]" + Fore.WHITE + f" Auto-response {status} for guild {interaction.guild.name} in channel {Fore.YELLOW}{channel.mention}")
+        await interaction.response.send_message(f"Auto-response for this guild is now {status} in channel {channel.mention}.")
 
     @commands.Cog.listener()
-    async def on_message(self, message: nextcord.Message):
+    async def on_message(self, message):
+        """Listen for messages and provide AI responses if enabled."""
         if message.author.bot:
             return
 
-        bot_name = self.config.get("bot_name", "Luna")
-        should_respond = False
-        response_prefix = ""
+        guild_settings = await self.get_guild_settings(message.guild.id)
 
-        try:
-            with self.db.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT channel_id FROM ai_channels WHERE guild_id = ?",
-                    (message.guild.id,)
-                )
-                result = cursor.fetchone()
+        if guild_settings:
+            channel_id, auto_response_enabled = guild_settings
+            if message.channel.id != channel_id or not auto_response_enabled:
+                return
 
-                if (result and message.channel.id == result[0]) or \
-                   (self.bot.user in message.mentions) or \
-                   (message.content.lower().startswith(bot_name.lower())):
-                    should_respond = True
+            answer = await self.ask_ai(message.content)
 
-                    if message.content.lower().startswith(bot_name.lower()):
-                        message.content = message.content[len(bot_name):].strip()
-                        response_prefix = f"*{bot_name}:* "
+            if answer:
+                await self.insert_response(message.author.id, message.content, answer)
+                print(Fore.GREEN + f"[ Ai ]" + Fore.WHITE + f" Successfully sent response message to {Fore.YELLOW}{message.author.display_name} ({message.author.name})")
+                await message.channel.send(f"**AI Response**: {answer}")
+            else:
+                print(Fore.RED + f"[ Ai ] Error processing request for {message.author.display_name} ({message.author.name})")
+                await message.channel.send("There was an error processing your request.")
 
-            if should_respond:
-                async with message.channel.typing():
-                    response = await self.generate_ai_response(message.content)
-                    if response:
-                        full_response = f"{response_prefix}{response}" if response_prefix else response
-                        await message.reply(full_response)
-
-        except Exception:
-            await message.channel.send(
-                "❌ An error occurred. Please try again later."
-            )
-
-def setup(bot: commands.Bot):
+def setup(bot):
     bot.add_cog(AICog(bot))
+
