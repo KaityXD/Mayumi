@@ -66,7 +66,7 @@ class AICog(commands.Cog):
         }
 
         headers = {
-            "Content-Type": "application/json",
+            "Content-Type": "application/json", 
             "Authorization": f"Bearer {GROQ_API_KEY}"
         }
 
@@ -102,7 +102,7 @@ class AICog(commands.Cog):
                 self.message_history.pop(0)  # Remove the oldest message
 
             print(Fore.GREEN + f"[ Ai ]" + Fore.WHITE + f" Successfully sent response message to {Fore.YELLOW}{interaction.user.display_name} ({interaction.user.name})")
-            await interaction.response.send_message(f"**AI Response**: {answer}")
+            await interaction.response.send_message(f"{answer}")
         else:
             print(Fore.RED + f"[ Ai ] Error processing request for {interaction.user.display_name} ({interaction.user.name})")
             await interaction.response.send_message("There was an error processing your request.")
@@ -141,7 +141,7 @@ class AICog(commands.Cog):
             if answer:
                 await self.insert_response(message.author.id, message.content, answer)
                 print(Fore.GREEN + f"[ Ai ]" + Fore.WHITE + f" Successfully sent response message to {Fore.YELLOW}{message.author.display_name} ({message.author.name})")
-                await message.channel.send(f"**AI Response**: {answer}")
+                await message.channel.send(f"{answer}")
             else:
                 print(Fore.RED + f"[ Ai ] Error processing request for {message.author.display_name} ({message.author.name})")
                 await message.channel.send("There was an error processing your request.")
