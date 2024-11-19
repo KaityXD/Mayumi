@@ -204,4 +204,5 @@ def setup(bot: Bot):
     """Set up the CogManager cog."""
     if not OWNER_ID:
         print(Fore.YELLOW + "[WARN]: Owner ID not specified!")
-    bot.add_cog(CogManager(bot, owner_id=OWNER_ID))
+    else:
+        bot.add_cog(CogManager(bot, owner_id=OWNER_ID))
