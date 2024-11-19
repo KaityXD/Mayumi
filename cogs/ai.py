@@ -11,19 +11,15 @@ from utils.config import GROQ_API_KEY
 # Initialize colorama for Windows compatibility
 init(autoreset=True)
 
-# Load environment variables
-load_dotenv()
-
 GROQ_API_KEY = GROQ_API_KEY
 
 class AICog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = 'ai_responses.db'
+        self.db_path = 'db/ai_responses.db'
         self.auto_response_enabled = False
         self.message_history = []  # Store up to 5 messages here
-        self.loop = asyncio.get_event_loop()
-        self.loop.create_task(self.setup_db())
+        self.setup_db()
 
     async def setup_db(self):
         """Setup the database and ensure the tables exist."""
@@ -147,5 +143,7 @@ class AICog(commands.Cog):
                 await message.channel.send("There was an error processing your request.")
 
 def setup(bot):
-    bot.add_cog(AICog(bot))
-
+    if not GROQ_API_KEY:
+        print(Fore.YELLOW + "[WARN]: Groq API Key not specified!")
+    else:
+        bot.add_cog(AICog(bot))

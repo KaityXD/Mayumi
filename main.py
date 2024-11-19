@@ -6,15 +6,13 @@ from nextcord.ext import commands
 from utils.config import BOT_TOKEN
 from nextcord import *
 from colorama import init, Fore
+
 init(autoreset=True)
-
-
+os.makedirs('db', exist_ok=True)
 bot = commands.Bot(intents=Intents.all(), help_command=None, command_prefix='!')
 
 @bot.event
 async def on_ready():
-
-
     total_slash_commands = len(bot.get_application_commands())
     total_cogs = len(bot.cogs)
     print(Fore.LIGHTGREEN_EX + "\n<-----------[ KaiTy_Ez ]----------->")

@@ -2,9 +2,9 @@ from dotenv import load_dotenv
 import os
 
 load_dotenv()
-BOT_TOKEN = "" # your bot token
+BOT_TOKEN = ""
 OWNER_ID = ""
-GROQ_API_KEY = "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"
+GROQ_API_KEY = ""
 if not GROQ_API_KEY:
     GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 if not OWNER_ID:
