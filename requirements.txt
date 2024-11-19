@@ -1,4 +1,6 @@
 git+https://github.com/nextcord/nextcord@master
 colorama
 httpx
-psutils
+psutil
+python-dotenv
+aiosqlite
