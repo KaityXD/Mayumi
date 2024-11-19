@@ -1,0 +1,27 @@
+2024-11-19 06:48:58,712 - nextcord.client - INFO - logging in using static token
+2024-11-19 06:48:58,740 - nextcord.http - INFO - Allowed 1 rate limits to be garbage collected.
+2024-11-19 06:49:00,203 - nextcord.gateway - INFO - Shard ID None has sent the IDENTIFY payload.
+2024-11-19 06:49:00,571 - nextcord.gateway - INFO - Shard ID None has connected to Gateway: ["gateway-prd-us-east1-c-58jg",{"micros":54435,"calls":["id_created",{"micros":771,"calls":[]},"session_lookup_time",{"micros":273,"calls":[]},"session_lookup_finished",{"micros":16,"calls":[]},"discord-sessions-prd-1-230",{"micros":53031,"calls":["start_session",{"micros":48635,"calls":["discord-api-rpc-67897fc967-qf4jz",{"micros":43915,"calls":["get_user",{"micros":5896},"get_guilds",{"micros":5273},"send_scheduled_deletion_message",{"micros":9},"guild_join_requests",{"micros":1},"authorized_ip_coro",{"micros":9}]}]},"starting_guild_connect",{"micros":82,"calls":[]},"presence_started",{"micros":396,"calls":[]},"guilds_started",{"micros":172,"calls":[]},"guilds_connect",{"micros":3,"calls":[]},"presence_connect",{"micros":3712,"calls":[]},"connect_finished",{"micros":3718,"calls":[]},"build_ready",{"micros":25,"calls":[]},"clean_ready",{"micros":1,"calls":[]},"optimize_ready",{"micros":0,"calls":[]},"split_ready",{"micros":1,"calls":[]}]}]}] (Session ID: 064387a6837f3b7b0bed62e4e639044a). Resume URL specified as wss://gateway-us-east1-c.discord.gg
+2024-11-19 06:49:00,998 - nextcord.state - INFO - nextcord.ConnectionState: Registering command with signature ('cog', 1, None)
+2024-11-19 06:49:01,537 - nextcord.state - INFO - nextcord.ConnectionState: Registering command with signature ('setup', 1, None)
+2024-11-19 06:49:02,114 - nextcord.state - INFO - nextcord.ConnectionState: Registering command with signature ('config', 1, None)
+2024-11-19 06:50:21,328 - cogs.ai - INFO - AI channel set up in guild 1286939111525191691
+2024-11-19 06:50:25,966 - httpx - INFO - HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2024-11-19 06:50:26,620 - cogs.ai - INFO - Successfully responded to message 1308217783632400444 in guild 1286939111525191691
+2024-11-19 06:50:37,026 - httpx - INFO - HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2024-11-19 06:50:37,560 - cogs.ai - INFO - Successfully responded to message 1308217832609157223 in guild 1286939111525191691
+2024-11-19 06:50:50,686 - httpx - INFO - HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2024-11-19 06:50:51,225 - cogs.ai - INFO - Successfully responded to message 1308217887688753173 in guild 1286939111525191691
+2024-11-19 06:51:09,254 - httpx - INFO - HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2024-11-19 06:51:09,795 - cogs.ai - INFO - Successfully responded to message 1308217965942145044 in guild 1286939111525191691
+2024-11-19 06:51:34,832 - httpx - INFO - HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2024-11-19 06:51:35,384 - cogs.ai - INFO - Successfully responded to message 1308218073056149577 in guild 1286939111525191691
+2024-11-19 06:51:56,010 - httpx - INFO - HTTP Request: POST https://api.groq.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+2024-11-19 06:51:56,726 - cogs.ai - INFO - Successfully responded to message 1308218162596151328 in guild 1286939111525191691
+2024-11-19 06:53:58,776 - nextcord.http - INFO - Allowed 1 rate limits to be garbage collected.
+2024-11-19 06:59:06,812 - nextcord.http - INFO - Allowed 1 rate limits to be garbage collected.
+2024-11-19 07:04:32,681 - nextcord.http - INFO - Allowed 3 rate limits to be garbage collected.
+2024-11-19 07:08:34,341 - nextcord.gateway - WARNING - Can't keep up, shard ID None websocket is 38.9s behind.
+2024-11-19 07:16:40,147 - nextcord.client - INFO - Received keyboard interrupt, closing.
+2024-11-19 07:16:40,202 - nextcord.gateway - INFO - Websocket closed with 1000, cannot reconnect.
+2024-11-19 07:16:40,660 - nextcord.client - INFO - Closing the event loop.

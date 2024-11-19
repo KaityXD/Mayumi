@@ -1,0 +1,7 @@
+{
+    "model": "llama3-8b-8192",
+    "max_retries": 3,
+    "retry_delay": 1,
+    "message_timeout": 60,
+    "max_history": 10
+}
