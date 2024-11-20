@@ -8,9 +8,9 @@ OWNER_ID = 1118160684119752834
 GROQ_API_KEY = "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"
 
 # For music cog
-LAVALINK_HOST = "lava-v4.ajieblogs.eu.org"
-LAVALINK_PORT = 80
-LAVALINK_PASSWORD = "https://dsc.gg/ajidevserver"
+LAVALINK_HOST = "212.227.65.132"
+LAVALINK_PORT = 10296
+LAVALINK_PASSWORD = "charlesnaig-lavalink"
 
 
 if not GROQ_API_KEY:
