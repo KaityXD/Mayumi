@@ -2,14 +2,15 @@ import os
 from typing import Optional, List, Literal
 from dataclasses import dataclass
 from utils.config import OWNER_ID
-
 import nextcord
 from nextcord import Interaction, ButtonStyle, Embed, Color
 from nextcord.ext import commands
 from nextcord.ext.commands import Bot
 from difflib import get_close_matches
+from colorama import Fore, init
 
 ActionType = Literal["load", "unload", "reload"]
+init(autoreset=True)
 
 @dataclass
 class CogOperation:
@@ -201,4 +202,7 @@ class CogManager(commands.Cog):
 
 def setup(bot: Bot):
     """Set up the CogManager cog."""
-    bot.add_cog(CogManager(bot, owner_id=OWNER_ID))
+    if not OWNER_ID:
+        print(Fore.YELLOW + "[WARN]: Owner ID not specified!")
+    else:
+        bot.add_cog(CogManager(bot, owner_id=OWNER_ID))
