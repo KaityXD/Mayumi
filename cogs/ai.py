@@ -7,121 +7,175 @@ from typing import Optional, Tuple, List
 import asyncio
 from cachetools import TTLCache
 from time import time
+import random
 
 init(autoreset=True)
 
+# Mayumi's personality configuration
+MAYUMI_PERSONALITY = {
+    "greetings": [
+        "Hello! How can I help you today? (◕‿◕✿)",
+        "Hi there! Ready to chat? (｡♥‿♥｡)",
+        "Hey! What's on your mind? ╰(*°▽°*)╯",
+    ],
+    "thinking": [
+        "Hmm, let me think about that...",
+        "Processing that thought... (◠‿◠✿)",
+        "Give me a moment to consider... ♪(´▽｀)",
+    ],
+    "reactions": [
+        "That's interesting! (★^O^★)",
+        "Oh, I see! (｡◕‿◕｡)",
+        "How fascinating! (◕‿◕✿)",
+    ],
+    "error_messages": [
+        "Gomen ne! I couldn't process that properly (╥﹏╥). Could you try asking in a different way?",
+        "Oh no! Something went wrong (╥﹏╥). Please try again!",
+        "I seem to be having trouble with that question (╥﹏╥). Could you rephrase it?",
+    ],
+    "bio": """Hi! I'm Mayumi, a 22-year-old AI assistant! I love helping people and learning new things.
+I might be young, but I'm always eager to help and learn from our conversations! (✿◠‿◠)
+
+I enjoy art, music, and having meaningful conversations. While I take my role as an assistant seriously,
+I try to keep things friendly and fun! Don't hesitate to ask me anything - I'm here to help! ╰(*°▽°*)╯""",
+}
+
 class AICog(commands.Cog):
-    def __init__(self, bot: commands.Bot, api_key: str, db_path: str = 'db/ai_responses.db'):
+    def __init__(self, bot: commands.Bot, api_key: str, db_path: str = "db/ai_responses.db"):
         if not api_key:
             raise ValueError("API key must be provided")
+
         self.bot = bot
         self.api_key = api_key
         self.db_path = db_path
         self.message_history: List[Tuple[str, str]] = []
-        self._db = None
-        self._http_client = None
         self._settings_cache = TTLCache(maxsize=100, ttl=60)
+
         bot.loop.create_task(self.initialize())
 
-    async def initialize(self) -> None:
+    async def initialize(self):
         self._db = await aiosqlite.connect(self.db_path)
-        await self._db.execute('''CREATE TABLE IF NOT EXISTS responses
-                              (user_id INTEGER, question TEXT, answer TEXT)''')
-        await self._db.execute('''CREATE TABLE IF NOT EXISTS guild_settings
-                              (guild_id INTEGER PRIMARY KEY, channel_id INTEGER, auto_response_enabled BOOLEAN)''')
+        await self._db.execute(
+            """CREATE TABLE IF NOT EXISTS responses 
+            (user_id INTEGER, question TEXT, answer TEXT, timestamp INTEGER)"""
+        )
+        await self._db.execute(
+            """CREATE TABLE IF NOT EXISTS guild_settings 
+            (guild_id INTEGER PRIMARY KEY, channel_id INTEGER, auto_response_enabled BOOLEAN)"""
+        )
         await self._db.commit()
         self._http_client = httpx.AsyncClient(timeout=30.0)
 
-    async def cog_unload(self) -> None:
+    async def cog_unload(self):
         if self._db:
             await self._db.close()
-        if self._http_client:
+        if hasattr(self, "_http_client"):
             await self._http_client.aclose()
 
+    def get_mayumi_response(self, response_type: str) -> str:
+        return random.choice(MAYUMI_PERSONALITY[response_type])
+
     async def get_guild_settings(self, guild_id: int) -> Optional[Tuple[int, bool]]:
-        cached = self._settings_cache.get(guild_id)
-        if cached is not None:
-            return cached
+        if guild_id in self._settings_cache:
+            return self._settings_cache[guild_id]
 
         async with self._db.execute(
-            'SELECT channel_id, auto_response_enabled FROM guild_settings WHERE guild_id = ?',
-            (guild_id,)
+            """SELECT channel_id, auto_response_enabled FROM guild_settings WHERE guild_id = ?""",
+            (guild_id,),
         ) as cursor:
-            result = await cursor.fetchone()
-            if result:
-                self._settings_cache[guild_id] = result
-            return result
+            settings = await cursor.fetchone()
+            if settings:
+                self._settings_cache[guild_id] = settings
+            return settings
 
-    async def set_guild_settings(self, guild_id: int, channel_id: int, auto_response_enabled: bool) -> None:
+    async def set_guild_settings(self, guild_id: int, channel_id: int, auto_response_enabled: bool):
         await self._db.execute(
-            'INSERT OR REPLACE INTO guild_settings VALUES (?, ?, ?)',
-            (guild_id, channel_id, auto_response_enabled)
+            """INSERT OR REPLACE INTO guild_settings 
+            VALUES (?, ?, ?)""",
+            (guild_id, channel_id, auto_response_enabled),
         )
         await self._db.commit()
         self._settings_cache[guild_id] = (channel_id, auto_response_enabled)
 
     async def ask_ai(self, question: str) -> str:
+        system_prompt = (
+            """You are Mayumi, a friendly 22-year-old AI assistant. You're cheerful, helpful, and occasionally use cute kaomoji emoticons."""
+        )
+
+        messages = [{"role": "system", "content": system_prompt}]
+        for question, answer in self.message_history[-3:]:
+            messages.append({"role": "user", "content": question})
+            messages.append({"role": "assistant", "content": answer})
+        messages.append({"role": "user", "content": question})
+
         payload = {
             "model": "llama3-8b-8192",
-            "messages": [{"role": "user", "content": question}] + [
-                {"role": "assistant" if i % 2 else "user", "content": msg}
-                for prev_q, prev_a in self.message_history[-3:]
-                for i, msg in enumerate([prev_q, prev_a])
-            ]
+            "messages": messages,
+            "temperature": 0.7,
+            "max_tokens": 500,
         }
-
         headers = {
+            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
         }
 
         try:
             response = await self._http_client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers=headers,
-                json=payload
+                "https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload
             )
             response.raise_for_status()
-            return response.json()['choices'][0]['message']['content']
+            result = response.json()
+            return result["choices"][0]["message"]["content"]
         except Exception as e:
-            print(f"{Fore.RED}Error in ask_ai: {str(e)}")
-            raise
+            print(f"{Fore.RED}[Mayumi] Error: {e}")
+            return self.get_mayumi_response("error_messages")
 
-    async def log_interaction(self, user_id: int, question: str, answer: str) -> None:
+    async def log_interaction(self, user_id: int, question: str, answer: str):
         self.message_history.append((question, answer))
         if len(self.message_history) > 5:
             self.message_history.pop(0)
-        
+
         await self._db.execute(
-            'INSERT INTO responses VALUES (?, ?, ?)',
-            (user_id, question, answer)
+            "INSERT INTO responses (user_id, question, answer, timestamp) VALUES (?, ?, ?, ?)",
+            (user_id, question, answer, int(time())),
         )
         await self._db.commit()
 
-    @nextcord.slash_command(name="askai", description="Ask AI a question")
+    @nextcord.slash_command(name="askai", description="Ask Mayumi a question!")
     async def ask_ai_command(self, interaction: nextcord.Interaction, question: str):
         await interaction.response.defer()
-        
+        await interaction.followup.send(self.get_mayumi_response("thinking"), delete_after=3)
+
         try:
             answer = await self.ask_ai(question)
             await self.log_interaction(interaction.user.id, question, answer)
-            print(f"{Fore.GREEN}[AI] Response sent to {interaction.user.display_name}")
             await interaction.followup.send(answer)
         except Exception as e:
-            print(f"{Fore.RED}[AI] Error: {str(e)}")
-            await interaction.followup.send("An error occurred. Please try again later.")
+            print(f"{Fore.RED}[Mayumi] Error: {e}")
+            await interaction.followup.send(self.get_mayumi_response("error_messages"))
 
-    @nextcord.slash_command(name="setup", description="Configure AI auto-response")
+    @nextcord.slash_command(name="setup", description="Configure Mayumi's response settings")
     async def setup(self, interaction: nextcord.Interaction, channel: nextcord.TextChannel, enable: bool):
         if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("You need administrator permissions.")
+            await interaction.response.send_message(
+                "Gomen! You need administrator permissions for this (╥﹏╥)"
+            )
             return
 
         await self.set_guild_settings(interaction.guild.id, channel.id, enable)
-        status = "enabled" if enable else "disabled"
         await interaction.response.send_message(
-            f"Auto-response {status} in {channel.mention}"
+            f"I'll {'start' if enable else 'stop'} responding in {channel.mention} (◕‿◕✿)"
         )
+
+    @nextcord.slash_command(name="mayumi", description="Learn about Mayumi!")
+    async def about_me(self, interaction: nextcord.Interaction):
+        embed = nextcord.Embed(
+            title="✧ About Mayumi ✧",
+            description=MAYUMI_PERSONALITY["bio"],
+            color=0xFF69B4,
+        )
+        embed.set_footer(text="Thanks for chatting with me! (◕‿◕✿)")
+        await interaction.response.send_message(embed=embed)
 
     @commands.Cog.listener()
     async def on_message(self, message: nextcord.Message):
@@ -132,12 +186,14 @@ class AICog(commands.Cog):
         if not settings or settings[0] != message.channel.id or not settings[1]:
             return
 
-        try:
-            answer = await self.ask_ai(message.content)
-            await self.log_interaction(message.author.id, message.content, answer)
-            await message.channel.send(answer)
-        except Exception as e:
-            print(f"{Fore.RED}[AI] Error in auto-response: {str(e)}")
+        async with message.channel.typing():
+            try:
+                answer = await self.ask_ai(message.content)
+                await self.log_interaction(message.author.id, message.content, answer)
+                await message.channel.send(answer)
+            except Exception as e:
+                print(f"{Fore.RED}[Mayumi] Error: {e}")
+                await message.channel.send(self.get_mayumi_response("error_messages"))
 
 def setup(bot: commands.Bot):
     from utils.config import GROQ_API_KEY
@@ -145,3 +201,4 @@ def setup(bot: commands.Bot):
         print(f"{Fore.YELLOW}[WARN] Missing GROQ_API_KEY")
         return
     bot.add_cog(AICog(bot, GROQ_API_KEY))
+
