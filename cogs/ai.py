@@ -4,14 +4,12 @@ import httpx
 import aiosqlite
 from colorama import Fore, init
 from typing import Optional, Tuple, List
-import asyncio
 from cachetools import TTLCache
 from time import time
 import random
 
 init(autoreset=True)
 
-# Mayumi's personality configuration
 MAYUMI_PERSONALITY = {
     "greetings": [
         "Hello! How can I help you today? (◕‿◕✿)",
@@ -49,6 +47,7 @@ class AICog(commands.Cog):
         self.api_key = api_key
         self.db_path = db_path
         self.message_history: List[Tuple[str, str]] = []
+        self.processed_messages = TTLCache(maxsize=100, ttl=300)
         self._settings_cache = TTLCache(maxsize=100, ttl=60)
 
         bot.loop.create_task(self.initialize())
@@ -56,11 +55,11 @@ class AICog(commands.Cog):
     async def initialize(self):
         self._db = await aiosqlite.connect(self.db_path)
         await self._db.execute(
-            """CREATE TABLE IF NOT EXISTS responses 
+            """CREATE TABLE IF NOT EXISTS responses
             (user_id INTEGER, question TEXT, answer TEXT, timestamp INTEGER)"""
         )
         await self._db.execute(
-            """CREATE TABLE IF NOT EXISTS guild_settings 
+            """CREATE TABLE IF NOT EXISTS guild_settings
             (guild_id INTEGER PRIMARY KEY, channel_id INTEGER, auto_response_enabled BOOLEAN)"""
         )
         await self._db.commit()
@@ -90,7 +89,7 @@ class AICog(commands.Cog):
 
     async def set_guild_settings(self, guild_id: int, channel_id: int, auto_response_enabled: bool):
         await self._db.execute(
-            """INSERT OR REPLACE INTO guild_settings 
+            """INSERT OR REPLACE INTO guild_settings
             VALUES (?, ?, ?)""",
             (guild_id, channel_id, auto_response_enabled),
         )
@@ -103,9 +102,9 @@ class AICog(commands.Cog):
         )
 
         messages = [{"role": "system", "content": system_prompt}]
-        for question, answer in self.message_history[-3:]:
-            messages.append({"role": "user", "content": question})
-            messages.append({"role": "assistant", "content": answer})
+        for q, a in self.message_history[-3:]:
+            messages.append({"role": "user", "content": q})
+            messages.append({"role": "assistant", "content": a})
         messages.append({"role": "user", "content": question})
 
         payload = {
@@ -141,46 +140,14 @@ class AICog(commands.Cog):
         )
         await self._db.commit()
 
-    @nextcord.slash_command(name="askai", description="Ask Mayumi a question!")
-    async def ask_ai_command(self, interaction: nextcord.Interaction, question: str):
-        await interaction.response.defer()
-        await interaction.followup.send(self.get_mayumi_response("thinking"), delete_after=3)
-
-        try:
-            answer = await self.ask_ai(question)
-            await self.log_interaction(interaction.user.id, question, answer)
-            await interaction.followup.send(answer)
-        except Exception as e:
-            print(f"{Fore.RED}[Mayumi] Error: {e}")
-            await interaction.followup.send(self.get_mayumi_response("error_messages"))
-
-    @nextcord.slash_command(name="setup", description="Configure Mayumi's response settings")
-    async def setup(self, interaction: nextcord.Interaction, channel: nextcord.TextChannel, enable: bool):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message(
-                "Gomen! You need administrator permissions for this (╥﹏╥)"
-            )
-            return
-
-        await self.set_guild_settings(interaction.guild.id, channel.id, enable)
-        await interaction.response.send_message(
-            f"I'll {'start' if enable else 'stop'} responding in {channel.mention} (◕‿◕✿)"
-        )
-
-    @nextcord.slash_command(name="mayumi", description="Learn about Mayumi!")
-    async def about_me(self, interaction: nextcord.Interaction):
-        embed = nextcord.Embed(
-            title="✧ About Mayumi ✧",
-            description=MAYUMI_PERSONALITY["bio"],
-            color=0xFF69B4,
-        )
-        embed.set_footer(text="Thanks for chatting with me! (◕‿◕✿)")
-        await interaction.response.send_message(embed=embed)
-
     @commands.Cog.listener()
     async def on_message(self, message: nextcord.Message):
         if message.author.bot or not message.guild:
             return
+
+        if message.id in self.processed_messages:
+            return
+        self.processed_messages[message.id] = True
 
         settings = await self.get_guild_settings(message.guild.id)
         if not settings or settings[0] != message.channel.id or not settings[1]:
