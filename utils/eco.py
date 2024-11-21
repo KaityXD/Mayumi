@@ -1,8 +1,24 @@
 import sqlite3
 import logging
-from typing import Optional, List, Dict, Union
+from typing import Optional, List, Dict, Union, Tuple
 from datetime import datetime, timedelta
 from enum import Enum, auto
+from contextlib import contextmanager
+from dataclasses import dataclass
+
+@dataclass
+class TransactionResult:
+    success: bool
+    message: Optional[str] = None
+    old_balance: Optional[int] = None
+    new_balance: Optional[int] = None
+    transaction_amount: Optional[int] = None
+
+class TransactionStatus(Enum):
+    PENDING = auto()
+    COMPLETED = auto()
+    FAILED = auto()
+    REVERSED = auto()
 
 class EconomyError(Exception):
     def __init__(self, message="An economy-related error occurred", details=None):
@@ -10,40 +26,49 @@ class EconomyError(Exception):
         self.details = details
         super().__init__(self.message)
 
-class InsufficientFundsError(EconomyError):
-    def __init__(self, current_balance=0, requested_amount=0, user_id=None):
-        self.current_balance = current_balance
-        self.requested_amount = requested_amount
-        self.user_id = user_id
-        message = f"Insufficient funds for transaction. Current balance: {current_balance}, Requested: {requested_amount}"
+class TransactionLimitExceededError(EconomyError):
+    def __init__(self, limit_type: str, current_amount: int, limit: int):
+        message = f"{limit_type} limit exceeded. Current: {current_amount}, Limit: {limit}"
         super().__init__(message, {
-            "current_balance": current_balance,
-            "requested_amount": requested_amount,
-            "user_id": user_id
+            "limit_type": limit_type,
+            "current_amount": current_amount,
+            "limit": limit
         })
 
-class TransactionType(Enum):
-    CREDIT = auto()
-    DEBIT = auto()
-    TRANSFER = auto()
-    PENALTY = auto()
-    REWARD = auto()
-
 class EconomyManager:
-    def __init__(self, 
-                 db_path: str = "economy.db", 
-                 initial_balance: int = 0, 
-                 max_transaction_history: int = 100,
-                 logger: Optional[logging.Logger] = None):
+    def __init__(
+        self,
+        db_path: str = "db/economy.db",
+        initial_balance: int = 0,
+        max_transaction_history: int = 100,
+        logger: Optional[logging.Logger] = None
+    ):
         self.db_path = db_path
         self.initial_balance = initial_balance
         self.max_transaction_history = max_transaction_history
         self.logger = logger or logging.getLogger(__name__)
+        self._connection = None
+
+    @contextmanager
+    def get_connection(self):
+        """Context manager for database connections with automatic cleanup."""
+        if self._connection is None:
+            self._connection = sqlite3.connect(self.db_path)
+        try:
+            yield self._connection
+        except Exception as e:
+            self.logger.error(f"Database error: {e}")
+            raise
+        finally:
+            if self._connection:
+                self._connection.close()
+                self._connection = None
 
     def initialize(self) -> None:
-        with sqlite3.connect(self.db_path) as db:
+        with self.get_connection() as db:
             cursor = db.cursor()
             
+            # Add new status column and indexes
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id INTEGER PRIMARY KEY,
@@ -51,10 +76,12 @@ class EconomyManager:
                     last_daily_claim DATETIME,
                     total_earned INTEGER DEFAULT 0,
                     total_spent INTEGER DEFAULT 0,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    last_activity DATETIME,
+                    status TEXT DEFAULT 'active'
                 )
             """)
-            
+
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS transactions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,227 +90,196 @@ class EconomyManager:
                     type TEXT,
                     description TEXT,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    status TEXT DEFAULT 'completed',
+                    reference_id TEXT,
+                    metadata TEXT,
                     FOREIGN KEY(user_id) REFERENCES users(user_id)
                 )
             """)
-            
+
+            # Add indexes for better query performance
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS wallet_limits (
-                    user_id INTEGER PRIMARY KEY,
-                    max_balance INTEGER,
-                    daily_withdraw_limit INTEGER,
-                    is_frozen BOOLEAN DEFAULT 0,
-                    FOREIGN KEY(user_id) REFERENCES users(user_id)
-                )
+                CREATE INDEX IF NOT EXISTS idx_transactions_user_timestamp 
+                ON transactions(user_id, timestamp)
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_transactions_status 
+                ON transactions(status)
+            """)
+
+            db.commit()
+
+    async def process_scheduled_operations(self) -> None:
+        """Process scheduled operations like interest accrual or recurring rewards."""
+        with self.get_connection() as db:
+            cursor = db.cursor()
+            
+            # Example: Apply daily interest to positive balances
+            cursor.execute("""
+                UPDATE users 
+                SET balance = balance + CAST((balance * 0.001) as INTEGER)
+                WHERE balance > 0 AND 
+                      last_activity <= datetime('now', '-24 hours')
+            """)
+            
+            # Update last activity
+            cursor.execute("""
+                UPDATE users 
+                SET last_activity = CURRENT_TIMESTAMP
+                WHERE balance > 0
             """)
             
             db.commit()
-            self.logger.info("Economy database initialized successfully")
 
-    def get_balance(self, user_id: int) -> int:
-        try:
-            with sqlite3.connect(self.db_path) as db:
-                cursor = db.cursor()
-                cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
-                result = cursor.fetchone()
-                return result[0] if result else self.initial_balance
-        except Exception as e:
-            self.logger.error(f"Error retrieving balance for user {user_id}: {e}")
-            return 0
+    def get_user_statistics(self, user_id: int) -> Dict[str, Union[int, float, str]]:
+        """Get comprehensive statistics for a user."""
+        with self.get_connection() as db:
+            cursor = db.cursor()
+            
+            cursor.execute("""
+                SELECT 
+                    u.balance,
+                    u.total_earned,
+                    u.total_spent,
+                    u.created_at,
+                    COUNT(t.id) as total_transactions,
+                    AVG(CASE WHEN t.amount > 0 THEN t.amount ELSE NULL END) as avg_credit,
+                    AVG(CASE WHEN t.amount < 0 THEN t.amount ELSE NULL END) as avg_debit
+                FROM users u
+                LEFT JOIN transactions t ON u.user_id = t.user_id
+                WHERE u.user_id = ?
+                GROUP BY u.user_id
+            """, (user_id,))
+            
+            row = cursor.fetchone()
+            if not row:
+                return {}
+                
+            return {
+                "balance": row[0],
+                "total_earned": row[1],
+                "total_spent": row[2],
+                "account_age_days": (datetime.now() - datetime.fromisoformat(row[3])).days,
+                "total_transactions": row[4],
+                "average_credit": row[5] or 0,
+                "average_debit": row[6] or 0
+            }
 
-    def update_balance(
-        self, 
-        user_id: int, 
-        amount: int, 
-        transaction_type: TransactionType = TransactionType.CREDIT,
-        description: str = "Standard Transaction"
-    ) -> Dict[str, Union[int, bool]]:
-        try:
-            with sqlite3.connect(self.db_path) as db:
-                cursor = db.cursor()
-                
-                cursor.execute("SELECT is_frozen, max_balance FROM wallet_limits WHERE user_id = ?", (user_id,))
-                restrictions = cursor.fetchone()
-                
-                if restrictions and restrictions[0]:
-                    return {"success": False, "message": "Account is frozen"}
-                
-                current_balance = self.get_balance(user_id)
-                
-                if amount < 0 and abs(amount) > current_balance:
-                    raise InsufficientFundsError(
-                        current_balance=current_balance, 
-                        requested_amount=abs(amount), 
-                        user_id=user_id
-                    )
-                
-                new_balance = current_balance + amount
-                
-                if restrictions and restrictions[1] and new_balance > restrictions[1]:
-                    return {"success": False, "message": "Max balance limit exceeded"}
-                
-                cursor.execute("""
-                    INSERT INTO users (user_id, balance, total_earned, total_spent) 
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(user_id) DO UPDATE SET 
-                    balance = balance + ?, 
-                    total_earned = total_earned + MAX(0, ?),
-                    total_spent = total_spent + MAX(0, ?)
-                """, (
-                    user_id, new_balance, 
-                    max(0, amount), abs(min(0, amount)),
-                    amount, 
-                    max(0, amount), 
-                    abs(min(0, amount))
-                ))
-                
-                cursor.execute("""
-                    INSERT INTO transactions (user_id, amount, type, description)
-                    VALUES (?, ?, ?, ?)
-                """, (user_id, amount, transaction_type.name, description))
-                
-                cursor.execute("""
-                    DELETE FROM transactions 
-                    WHERE user_id = ? AND id NOT IN (
-                        SELECT id FROM transactions 
-                        WHERE user_id = ? 
-                        ORDER BY timestamp DESC 
-                        LIMIT ?
-                    )
-                """, (user_id, user_id, self.max_transaction_history))
-                
-                db.commit()
-                
-                self.logger.info(f"Balance updated for user {user_id}: {amount}")
-                
-                return {
-                    "success": True, 
-                    "old_balance": current_balance, 
-                    "new_balance": new_balance,
-                    "transaction_amount": amount
-                }
+    def batch_update_balances(
+        self,
+        updates: List[Tuple[int, int, str]]
+    ) -> Dict[str, Union[bool, List[Dict[str, Union[int, str]]]]]:
+        """
+        Perform batch balance updates efficiently.
         
-        except InsufficientFundsError as e:
-            self.logger.warning(str(e))
-            return {"success": False, "message": str(e)}
-        
-        except Exception as e:
-            self.logger.error(f"Unexpected error in balance update: {e}")
-            return {"success": False, "message": "Transaction failed"}
-
-    def transfer_funds(
-        self, 
-        from_user_id: int, 
-        to_user_id: int, 
-        amount: int, 
-        description: str = "User Transfer"
-    ) -> Dict[str, Union[int, bool]]:
-        if amount <= 0:
-            return {"success": False, "message": "Invalid transfer amount"}
-        
-        with sqlite3.connect(self.db_path) as db:
+        Args:
+            updates: List of tuples (user_id, amount, description)
+        """
+        results = []
+        with self.get_connection() as db:
             try:
+                cursor = db.cursor()
                 db.execute("BEGIN")
                 
-                sender_result = self.update_balance(
-                    from_user_id, 
-                    -amount, 
-                    TransactionType.TRANSFER,
-                    f"Transfer to user {to_user_id}"
-                )
-                
-                if not sender_result["success"]:
-                    db.rollback()
-                    return sender_result
-                
-                receiver_result = self.update_balance(
-                    to_user_id, 
-                    amount, 
-                    TransactionType.TRANSFER,
-                    f"Transfer from user {from_user_id}"
-                )
-                
-                if not receiver_result["success"]:
-                    self.update_balance(
-                        from_user_id, 
-                        amount, 
-                        TransactionType.CREDIT,
-                        "Transfer rollback"
-                    )
-                    db.rollback()
-                    return receiver_result
+                for user_id, amount, description in updates:
+                    # Check wallet limits
+                    cursor.execute("""
+                        SELECT balance, is_frozen, max_balance 
+                        FROM users u
+                        LEFT JOIN wallet_limits w ON u.user_id = w.user_id
+                        WHERE u.user_id = ?
+                    """, (user_id,))
+                    
+                    row = cursor.fetchone()
+                    if not row:
+                        current_balance = 0
+                        is_frozen = False
+                        max_balance = None
+                    else:
+                        current_balance, is_frozen, max_balance = row
+                    
+                    if is_frozen:
+                        results.append({
+                            "user_id": user_id,
+                            "success": False,
+                            "message": "Account frozen"
+                        })
+                        continue
+                    
+                    new_balance = current_balance + amount
+                    if max_balance and new_balance > max_balance:
+                        results.append({
+                            "user_id": user_id,
+                            "success": False,
+                            "message": "Max balance exceeded"
+                        })
+                        continue
+                    
+                    # Update balance
+                    cursor.execute("""
+                        INSERT INTO users (user_id, balance, total_earned, total_spent)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(user_id) DO UPDATE SET
+                        balance = balance + ?,
+                        total_earned = CASE WHEN ? > 0 THEN total_earned + ? ELSE total_earned END,
+                        total_spent = CASE WHEN ? < 0 THEN total_spent + ABS(?) ELSE total_spent END
+                    """, (
+                        user_id, new_balance,
+                        max(0, amount), abs(min(0, amount)),
+                        amount, amount, amount, amount, amount
+                    ))
+                    
+                    results.append({
+                        "user_id": user_id,
+                        "success": True,
+                        "old_balance": current_balance,
+                        "new_balance": new_balance
+                    })
                 
                 db.commit()
+                return {"success": True, "results": results}
                 
-                return {
-                    "success": True,
-                    "sender_old_balance": sender_result["old_balance"],
-                    "sender_new_balance": sender_result["new_balance"],
-                    "receiver_old_balance": receiver_result["old_balance"],
-                    "receiver_new_balance": receiver_result["new_balance"]
-                }
-            
             except Exception as e:
                 db.rollback()
-                self.logger.error(f"Transfer failed: {e}")
-                return {"success": False, "message": "Transfer failed"}
+                self.logger.error(f"Batch update failed: {e}")
+                return {"success": False, "message": str(e)}
 
-    def get_transactions(
-        self, 
-        user_id: int, 
-        limit: int = 10, 
-        transaction_type: Optional[TransactionType] = None
-    ) -> List[Dict[str, Union[int, str, datetime]]]:
-        with sqlite3.connect(self.db_path) as db:
+    def get_leaderboard(
+        self,
+        limit: int = 10,
+        offset: int = 0
+    ) -> List[Dict[str, Union[int, float]]]:
+        """Get the top users by balance."""
+        with self.get_connection() as db:
             cursor = db.cursor()
-            query = """
-                SELECT amount, type, description, timestamp 
-                FROM transactions 
-                WHERE user_id = ? 
-            """
-            params = [user_id]
             
-            if transaction_type:
-                query += " AND type = ?"
-                params.append(transaction_type.name)
+            cursor.execute("""
+                SELECT 
+                    user_id,
+                    balance,
+                    total_earned,
+                    total_spent,
+                    (SELECT COUNT(*) FROM transactions WHERE user_id = u.user_id) as transaction_count
+                FROM users u
+                WHERE status = 'active'
+                ORDER BY balance DESC
+                LIMIT ? OFFSET ?
+            """, (limit, offset))
             
-            query += " ORDER BY timestamp DESC LIMIT ?"
-            params.append(limit)
-            
-            cursor.execute(query, params)
             return [
                 {
-                    "amount": row[0], 
-                    "type": row[1], 
-                    "description": row[2], 
-                    "timestamp": datetime.fromisoformat(row[3])
-                } 
+                    "user_id": row[0],
+                    "balance": row[1],
+                    "total_earned": row[2],
+                    "total_spent": row[3],
+                    "transaction_count": row[4]
+                }
                 for row in cursor.fetchall()
             ]
 
-    def set_wallet_limit(
-        self, 
-        user_id: int, 
-        max_balance: Optional[int] = None, 
-        daily_withdraw_limit: Optional[int] = None
-    ) -> bool:
-        try:
-            with sqlite3.connect(self.db_path) as db:
-                cursor = db.cursor()
-                cursor.execute("""
-                    INSERT INTO wallet_limits (user_id, max_balance, daily_withdraw_limit)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(user_id) DO UPDATE SET 
-                    max_balance = COALESCE(?, max_balance),
-                    daily_withdraw_limit = COALESCE(?, daily_withdraw_limit)
-                """, (user_id, max_balance, daily_withdraw_limit, max_balance, daily_withdraw_limit))
-                db.commit()
-                return True
-        except Exception as e:
-            self.logger.error(f"Error setting wallet limits: {e}")
-            return False
-
 def main():
+    logging.basicConfig(level=logging.INFO)
     economy = EconomyManager(db_path="db/economy.db")
     economy.initialize()
 
