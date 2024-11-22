@@ -13,7 +13,7 @@ class EconomySystem:
     - Gambling games
     """
     
-    def __init__(self, db_path: str = "economy.db", starting_balance: int = 1000):
+    def __init__(self, db_path: str = "db/economy.db", starting_balance: int = 1000):
         """
         Initialize the economy system.
         
@@ -356,18 +356,14 @@ class EconomySystem:
 
     # === Leaderboard ===
     
-    def get_leaderboard(self, limit: int = 10) -> List[Dict]:
-        """Get top users by total wealth (wallet + bank)."""
+    def get_leaderboard(self, limit: int = 10, offset: int = 0) -> List[Dict]:
+        """Get top users by total wealth (wallet + bank), with pagination."""
         return self.conn.execute("""
             SELECT user_id, balance + bank_balance as total
             FROM users
             ORDER BY total DESC
-            LIMIT ?
-        """, (limit,)).fetchall()
-
-    def close(self):
-        """Close database connection."""
-        self.conn.close()
+            LIMIT ? OFFSET ?
+        """, (limit, offset)).fetchall()    
 
 # === Example Usage ===
 if __name__ == "__main__":

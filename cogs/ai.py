@@ -1,3 +1,4 @@
+import asyncio
 import nextcord
 from nextcord.ext import commands
 import httpx
@@ -65,11 +66,14 @@ class AICog(commands.Cog):
         await self._db.commit()
         self._http_client = httpx.AsyncClient(timeout=30.0)
 
-    async def cog_unload(self):
+    async def cleanup(self):
         if self._db:
             await self._db.close()
         if hasattr(self, "_http_client"):
             await self._http_client.aclose()
+
+    def cog_unload(self):
+        asyncio.create_task(self.cleanup())
 
     def get_mayumi_response(self, response_type: str) -> str:
         return random.choice(MAYUMI_PERSONALITY[response_type])

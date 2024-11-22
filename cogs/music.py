@@ -73,7 +73,7 @@ class MusicCog(commands.Cog):
 
             embed = create_embed("", f"> **<a:experience:1276521604431482900> [{playlist.name}]({playlist.tracks[0].uri if playlist.tracks else ''})**")
             embed.set_author(name="🎵 | Added to queue", icon_url=self.bot.user.avatar.url)
-            embed.set_thumbnail(url=playlist.tracks[0].artwork_url if playlist.tracks else None)
+            embed.set_thumbnail(url=artworkUrl if playlist.tracks else None)
             embed.add_field(name="<:enchanted_book:1287070850633171026> Playlist Info", value=f"┗ **{inter.user.mention}** ``{len(playlist.tracks)} traks from playlist``")
             embed.set_footer(text=f"🌺 {self.bot.user.name} | By KaiTy_Ez")
         else:
@@ -82,13 +82,14 @@ class MusicCog(commands.Cog):
                 guild_state.current_track = track
                 await player.play(track)
                 status = "🎵 | Now playing"
+                artworkUrl = track.info.get('artwork_url', None)
             else:
                 guild_state.queue.append(track)
                 status = "🎵 | Added Track"
 
             embed = create_embed("", f"> **<a:experience:1276521604431482900> [{track.title}]({track.uri})**")
             embed.set_author(name=status, icon_url=self.bot.user.avatar.url)
-            embed.set_thumbnail(url=track.artwork_url)
+            embed.set_thumbnail(url=artworkUrl)
             embed.add_field(name="<:enchanted_book:1287070850633171026> Tracks info", value=f"┗ **{track.author}** ``{format_duration(track.length)}``")
             embed.set_footer(text=f"🌺 {self.bot.user.name} | By KaiTy_Ez")
 
