@@ -1,287 +1,410 @@
 import sqlite3
-import logging
-from typing import Optional, List, Dict, Union, Tuple
+from typing import Optional, List, Dict, Tuple
 from datetime import datetime, timedelta
-from enum import Enum, auto
-from contextlib import contextmanager
-from dataclasses import dataclass
+import json
 
-@dataclass
-class TransactionResult:
-    success: bool
-    message: Optional[str] = None
-    old_balance: Optional[int] = None
-    new_balance: Optional[int] = None
-    transaction_amount: Optional[int] = None
-
-class TransactionStatus(Enum):
-    PENDING = auto()
-    COMPLETED = auto()
-    FAILED = auto()
-    REVERSED = auto()
-
-class EconomyError(Exception):
-    def __init__(self, message="An economy-related error occurred", details=None):
-        self.message = message
-        self.details = details
-        super().__init__(self.message)
-
-class TransactionLimitExceededError(EconomyError):
-    def __init__(self, limit_type: str, current_amount: int, limit: int):
-        message = f"{limit_type} limit exceeded. Current: {current_amount}, Limit: {limit}"
-        super().__init__(message, {
-            "limit_type": limit_type,
-            "current_amount": current_amount,
-            "limit": limit
-        })
-
-class EconomyManager:
-    def __init__(
-        self,
-        db_path: str = "db/economy.db",
-        initial_balance: int = 0,
-        max_transaction_history: int = 100,
-        logger: Optional[logging.Logger] = None
-    ):
-        self.db_path = db_path
-        self.initial_balance = initial_balance
-        self.max_transaction_history = max_transaction_history
-        self.logger = logger or logging.getLogger(__name__)
-        self._connection = None
-
-    @contextmanager
-    def get_connection(self):
-        """Context manager for database connections with automatic cleanup."""
-        if self._connection is None:
-            self._connection = sqlite3.connect(self.db_path)
-        try:
-            yield self._connection
-        except Exception as e:
-            self.logger.error(f"Database error: {e}")
-            raise
-        finally:
-            if self._connection:
-                self._connection.close()
-                self._connection = None
-
-    def initialize(self) -> None:
-        with self.get_connection() as db:
-            cursor = db.cursor()
-            
-            # Add new status column and indexes
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY,
-                    balance INTEGER DEFAULT 0,
-                    last_daily_claim DATETIME,
-                    total_earned INTEGER DEFAULT 0,
-                    total_spent INTEGER DEFAULT 0,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    last_activity DATETIME,
-                    status TEXT DEFAULT 'active'
-                )
-            """)
-
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS transactions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    amount INTEGER,
-                    type TEXT,
-                    description TEXT,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    status TEXT DEFAULT 'completed',
-                    reference_id TEXT,
-                    metadata TEXT,
-                    FOREIGN KEY(user_id) REFERENCES users(user_id)
-                )
-            """)
-
-            # Add indexes for better query performance
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_transactions_user_timestamp 
-                ON transactions(user_id, timestamp)
-            """)
-
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_transactions_status 
-                ON transactions(status)
-            """)
-
-            db.commit()
-
-    async def process_scheduled_operations(self) -> None:
-        """Process scheduled operations like interest accrual or recurring rewards."""
-        with self.get_connection() as db:
-            cursor = db.cursor()
-            
-            # Example: Apply daily interest to positive balances
-            cursor.execute("""
-                UPDATE users 
-                SET balance = balance + CAST((balance * 0.001) as INTEGER)
-                WHERE balance > 0 AND 
-                      last_activity <= datetime('now', '-24 hours')
-            """)
-            
-            # Update last activity
-            cursor.execute("""
-                UPDATE users 
-                SET last_activity = CURRENT_TIMESTAMP
-                WHERE balance > 0
-            """)
-            
-            db.commit()
-
-    def get_user_statistics(self, user_id: int) -> Dict[str, Union[int, float, str]]:
-        """Get comprehensive statistics for a user."""
-        with self.get_connection() as db:
-            cursor = db.cursor()
-            
-            cursor.execute("""
-                SELECT 
-                    u.balance,
-                    u.total_earned,
-                    u.total_spent,
-                    u.created_at,
-                    COUNT(t.id) as total_transactions,
-                    AVG(CASE WHEN t.amount > 0 THEN t.amount ELSE NULL END) as avg_credit,
-                    AVG(CASE WHEN t.amount < 0 THEN t.amount ELSE NULL END) as avg_debit
-                FROM users u
-                LEFT JOIN transactions t ON u.user_id = t.user_id
-                WHERE u.user_id = ?
-                GROUP BY u.user_id
-            """, (user_id,))
-            
-            row = cursor.fetchone()
-            if not row:
-                return {}
-                
-            return {
-                "balance": row[0],
-                "total_earned": row[1],
-                "total_spent": row[2],
-                "account_age_days": (datetime.now() - datetime.fromisoformat(row[3])).days,
-                "total_transactions": row[4],
-                "average_credit": row[5] or 0,
-                "average_debit": row[6] or 0
-            }
-
-    def batch_update_balances(
-        self,
-        updates: List[Tuple[int, int, str]]
-    ) -> Dict[str, Union[bool, List[Dict[str, Union[int, str]]]]]:
+class EconomySystem:
+    """
+    A flexible Discord economy system with features like:
+    - Banking (balance, transactions)
+    - Shop system
+    - Inventory management
+    - Daily rewards
+    - Gambling games
+    """
+    
+    def __init__(self, db_path: str = "economy.db", starting_balance: int = 1000):
         """
-        Perform batch balance updates efficiently.
+        Initialize the economy system.
         
         Args:
-            updates: List of tuples (user_id, amount, description)
+            db_path: Path to SQLite database file
+            starting_balance: Amount given to new users
         """
-        results = []
-        with self.get_connection() as db:
-            try:
-                cursor = db.cursor()
-                db.execute("BEGIN")
-                
-                for user_id, amount, description in updates:
-                    # Check wallet limits
-                    cursor.execute("""
-                        SELECT balance, is_frozen, max_balance 
-                        FROM users u
-                        LEFT JOIN wallet_limits w ON u.user_id = w.user_id
-                        WHERE u.user_id = ?
-                    """, (user_id,))
-                    
-                    row = cursor.fetchone()
-                    if not row:
-                        current_balance = 0
-                        is_frozen = False
-                        max_balance = None
-                    else:
-                        current_balance, is_frozen, max_balance = row
-                    
-                    if is_frozen:
-                        results.append({
-                            "user_id": user_id,
-                            "success": False,
-                            "message": "Account frozen"
-                        })
-                        continue
-                    
-                    new_balance = current_balance + amount
-                    if max_balance and new_balance > max_balance:
-                        results.append({
-                            "user_id": user_id,
-                            "success": False,
-                            "message": "Max balance exceeded"
-                        })
-                        continue
-                    
-                    # Update balance
-                    cursor.execute("""
-                        INSERT INTO users (user_id, balance, total_earned, total_spent)
-                        VALUES (?, ?, ?, ?)
-                        ON CONFLICT(user_id) DO UPDATE SET
-                        balance = balance + ?,
-                        total_earned = CASE WHEN ? > 0 THEN total_earned + ? ELSE total_earned END,
-                        total_spent = CASE WHEN ? < 0 THEN total_spent + ABS(?) ELSE total_spent END
-                    """, (
-                        user_id, new_balance,
-                        max(0, amount), abs(min(0, amount)),
-                        amount, amount, amount, amount, amount
-                    ))
-                    
-                    results.append({
-                        "user_id": user_id,
-                        "success": True,
-                        "old_balance": current_balance,
-                        "new_balance": new_balance
-                    })
-                
-                db.commit()
-                return {"success": True, "results": results}
-                
-            except Exception as e:
-                db.rollback()
-                self.logger.error(f"Batch update failed: {e}")
-                return {"success": False, "message": str(e)}
+        self.conn = sqlite3.connect(db_path)
+        self.starting_balance = starting_balance
+        self.create_tables()
+        self._load_config()
 
-    def get_leaderboard(
-        self,
-        limit: int = 10,
-        offset: int = 0
-    ) -> List[Dict[str, Union[int, float]]]:
-        """Get the top users by balance."""
-        with self.get_connection() as db:
-            cursor = db.cursor()
+    def _load_config(self):
+        """Load default configuration settings"""
+        self.config = {
+            'daily_reward': 100,
+            'daily_streak_bonus': 50,
+            'work_min_amount': 50,
+            'work_max_amount': 200,
+            'work_cooldown': 3600,  # 1 hour in seconds
+            'gamble_min': 50,
+            'gamble_max': 1000000
+        }
+
+    def create_tables(self):
+        """Create all required database tables."""
+        with self.conn:
+            # Users table with more fields
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    balance INTEGER NOT NULL DEFAULT 0,
+                    bank_balance INTEGER NOT NULL DEFAULT 0,
+                    last_daily TIMESTAMP,
+                    daily_streak INTEGER DEFAULT 0,
+                    last_work TIMESTAMP,
+                    inventory TEXT DEFAULT '{}',
+                    last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             
-            cursor.execute("""
-                SELECT 
-                    user_id,
-                    balance,
-                    total_earned,
-                    total_spent,
-                    (SELECT COUNT(*) FROM transactions WHERE user_id = u.user_id) as transaction_count
-                FROM users u
-                WHERE status = 'active'
-                ORDER BY balance DESC
-                LIMIT ? OFFSET ?
-            """, (limit, offset))
+            # Transactions table
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS transactions (
+                    transaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    amount INTEGER NOT NULL,
+                    type TEXT NOT NULL,
+                    description TEXT DEFAULT 'Transaction',
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                )
+            """)
             
-            return [
-                {
-                    "user_id": row[0],
-                    "balance": row[1],
-                    "total_earned": row[2],
-                    "total_spent": row[3],
-                    "transaction_count": row[4]
-                }
-                for row in cursor.fetchall()
-            ]
+            # Shop items table
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS shop (
+                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    description TEXT,
+                    price INTEGER NOT NULL,
+                    stock INTEGER DEFAULT -1,
+                    role_reward TEXT,
+                    is_active BOOLEAN DEFAULT 1
+                )
+            """)
 
-def main():
-    logging.basicConfig(level=logging.INFO)
-    economy = EconomyManager(db_path="db/economy.db")
-    economy.initialize()
+    # === Basic Economy Functions ===
+    
+    def add_user(self, user_id: int) -> bool:
+        """
+        Add a new user to the economy system.
+        
+        Args:
+            user_id: Discord user ID
+            
+        Returns:
+            bool: True if new user created, False if user already exists
+        """
+        try:
+            with self.conn:
+                self.conn.execute("""
+                    INSERT INTO users (user_id, balance)
+                    VALUES (?, ?)
+                """, (user_id, self.starting_balance))
+            return True
+        except sqlite3.IntegrityError:
+            return False
 
+    def get_balance(self, user_id: int) -> Dict[str, int]:
+        """
+        Get user's wallet and bank balance.
+        
+        Args:
+            user_id: Discord user ID
+            
+        Returns:
+            Dict with wallet and bank balance
+        """
+        result = self.conn.execute("""
+            SELECT balance, bank_balance 
+            FROM users 
+            WHERE user_id = ?
+        """, (user_id,)).fetchone()
+        
+        if not result:
+            self.add_user(user_id)
+            return {"wallet": self.starting_balance, "bank": 0}
+            
+        return {"wallet": result[0], "bank": result[1]}
+
+    def update_balance(self, user_id: int, amount: int, 
+                      transaction_type: str = "generic", 
+                      description: str = "Update") -> Dict[str, int]:
+        """
+        Update user's wallet balance.
+        
+        Args:
+            user_id: Discord user ID
+            amount: Amount to add (positive) or subtract (negative)
+            transaction_type: Category of transaction
+            description: Transaction description
+            
+        Returns:
+            Dict with new wallet and bank balance
+        """
+        balance = self.get_balance(user_id)
+        new_balance = balance["wallet"] + amount
+        
+        if new_balance < 0:
+            raise ValueError("Insufficient funds")
+            
+        with self.conn:
+            self.conn.execute("""
+                UPDATE users 
+                SET balance = ?, last_active = CURRENT_TIMESTAMP 
+                WHERE user_id = ?
+            """, (new_balance, user_id))
+            
+            self.conn.execute("""
+                INSERT INTO transactions (user_id, amount, type, description)
+                VALUES (?, ?, ?, ?)
+            """, (user_id, amount, transaction_type, description))
+            
+        return self.get_balance(user_id)
+
+    # === Banking Functions ===
+    
+    def deposit(self, user_id: int, amount: int) -> Dict[str, int]:
+        """Move money from wallet to bank."""
+        balance = self.get_balance(user_id)
+        
+        if balance["wallet"] < amount:
+            raise ValueError("Insufficient funds in wallet")
+            
+        with self.conn:
+            self.conn.execute("""
+                UPDATE users 
+                SET balance = balance - ?,
+                    bank_balance = bank_balance + ?
+                WHERE user_id = ?
+            """, (amount, amount, user_id))
+            
+        return self.get_balance(user_id)
+
+    def withdraw(self, user_id: int, amount: int) -> Dict[str, int]:
+        """Move money from bank to wallet."""
+        balance = self.get_balance(user_id)
+        
+        if balance["bank"] < amount:
+            raise ValueError("Insufficient funds in bank")
+            
+        with self.conn:
+            self.conn.execute("""
+                UPDATE users 
+                SET balance = balance + ?,
+                    bank_balance = bank_balance - ?
+                WHERE user_id = ?
+            """, (amount, amount, user_id))
+            
+        return self.get_balance(user_id)
+
+    # === Daily Rewards ===
+    
+    def claim_daily(self, user_id: int) -> Dict[str, any]:
+        """
+        Claim daily reward and handle streaks.
+        
+        Returns dict with:
+            - amount: reward amount
+            - streak: current streak
+            - streak_bonus: bonus for streak
+        """
+        user = self.conn.execute("""
+            SELECT last_daily, daily_streak
+            FROM users WHERE user_id = ?
+        """, (user_id,)).fetchone()
+        
+        if not user:
+            self.add_user(user_id)
+            last_daily = None
+            streak = 0
+        else:
+            last_daily = user[0]
+            streak = user[1]
+
+        now = datetime.now()
+        
+        if last_daily:
+            last_daily = datetime.strptime(last_daily, '%Y-%m-%d %H:%M:%S')
+            hours_passed = (now - last_daily).total_seconds() / 3600
+            
+            if hours_passed < 24:
+                raise ValueError(f"Daily reward available in {24 - int(hours_passed)} hours")
+            
+            # Check if streak continues
+            if hours_passed <= 48:
+                streak += 1
+            else:
+                streak = 1
+        else:
+            streak = 1
+
+        # Calculate reward
+        base_amount = self.config['daily_reward']
+        streak_bonus = self.config['daily_streak_bonus'] * (streak - 1)
+        total_amount = base_amount + streak_bonus
+
+        # Update user
+        with self.conn:
+            self.conn.execute("""
+                UPDATE users 
+                SET balance = balance + ?,
+                    last_daily = ?,
+                    daily_streak = ?
+                WHERE user_id = ?
+            """, (total_amount, now, streak, user_id))
+
+        return {
+            "amount": total_amount,
+            "streak": streak,
+            "streak_bonus": streak_bonus
+        }
+
+    # === Inventory System ===
+    
+    def get_inventory(self, user_id: int) -> Dict:
+        """Get user's inventory."""
+        result = self.conn.execute("""
+            SELECT inventory FROM users WHERE user_id = ?
+        """, (user_id,)).fetchone()
+        
+        if not result:
+            return {}
+            
+        return json.loads(result[0])
+
+    def add_to_inventory(self, user_id: int, item_name: str, quantity: int = 1):
+        """Add item to user's inventory."""
+        inventory = self.get_inventory(user_id)
+        inventory[item_name] = inventory.get(item_name, 0) + quantity
+        
+        with self.conn:
+            self.conn.execute("""
+                UPDATE users 
+                SET inventory = ?
+                WHERE user_id = ?
+            """, (json.dumps(inventory), user_id))
+
+    # === Shop System ===
+    
+    def add_shop_item(self, name: str, price: int, description: str = None, 
+                      stock: int = -1, role_reward: str = None):
+        """Add item to the shop."""
+        with self.conn:
+            self.conn.execute("""
+                INSERT INTO shop (name, price, description, stock, role_reward)
+                VALUES (?, ?, ?, ?, ?)
+            """, (name, price, description, stock, role_reward))
+
+    def get_shop_items(self) -> List[Dict]:
+        """Get all active shop items."""
+        items = self.conn.execute("""
+            SELECT name, price, description, stock, role_reward
+            FROM shop
+            WHERE is_active = 1
+        """).fetchall()
+        
+        return [{
+            "name": item[0],
+            "price": item[1],
+            "description": item[2],
+            "stock": item[3],
+            "role_reward": item[4]
+        } for item in items]
+
+    def buy_item(self, user_id: int, item_name: str) -> Dict:
+        """
+        Purchase item from shop.
+        
+        Returns dict with transaction details
+        """
+        item = self.conn.execute("""
+            SELECT price, stock, role_reward
+            FROM shop
+            WHERE name = ? AND is_active = 1
+        """, (item_name,)).fetchone()
+        
+        if not item:
+            raise ValueError("Item not found")
+            
+        price, stock, role_reward = item
+        
+        if stock == 0:
+            raise ValueError("Item out of stock")
+            
+        balance = self.get_balance(user_id)
+        if balance["wallet"] < price:
+            raise ValueError("Insufficient funds")
+            
+        # Process purchase
+        with self.conn:
+            # Update stock if limited
+            if stock > 0:
+                self.conn.execute("""
+                    UPDATE shop
+                    SET stock = stock - 1
+                    WHERE name = ?
+                """, (item_name,))
+            
+            # Add to inventory and remove money
+            self.add_to_inventory(user_id, item_name)
+            self.update_balance(user_id, -price, "purchase", f"Bought {item_name}")
+            
+        return {
+            "item": item_name,
+            "price": price,
+            "role_reward": role_reward
+        }
+
+    # === Leaderboard ===
+    
+    def get_leaderboard(self, limit: int = 10) -> List[Dict]:
+        """Get top users by total wealth (wallet + bank)."""
+        return self.conn.execute("""
+            SELECT user_id, balance + bank_balance as total
+            FROM users
+            ORDER BY total DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+
+    def close(self):
+        """Close database connection."""
+        self.conn.close()
+
+# === Example Usage ===
 if __name__ == "__main__":
-    main()
+    # Initialize system
+    economy = EconomySystem(starting_balance=1000)
+    
+    # Add some shop items
+    economy.add_shop_item("🗡️ Sword", 500, "A mighty weapon", stock=10)
+    economy.add_shop_item("👑 VIP Role", 5000, "Exclusive server role", role_reward="VIP")
+    
+    # Example user interactions
+    user_id = 123456789
+    
+    # Add user and check balance
+    economy.add_user(user_id)
+    print("Initial balance:", economy.get_balance(user_id))
+    
+    # Claim daily reward
+    try:
+        daily = economy.claim_daily(user_id)
+        print(f"Daily reward: {daily['amount']} (Streak: {daily['streak']})")
+    except ValueError as e:
+        print(f"Daily error: {e}")
+    
+    # Buy an item
+    try:
+        purchase = economy.buy_item(user_id, "🗡️ Sword")
+        print(f"Purchased {purchase['item']} for {purchase['price']}")
+    except ValueError as e:
+        print(f"Purchase error: {e}")
+    
+    # Check inventory
+    print("Inventory:", economy.get_inventory(user_id))
+    
+    # Bank operations
+    economy.deposit(user_id, 500)
+    print("After deposit:", economy.get_balance(user_id))
+    
+    # Close connection
+    economy.close()
