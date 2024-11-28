@@ -38,7 +38,55 @@ class Work(commands.Cog):
                 'question': "What is the square root of 144?",
                 'answer': "12",
                 'difficulty': 1.3
+            },
+                    
+            {
+                "question": "What is the largest planet in our solar system?",
+                "answer": "Jupiter",
+                "difficulty": 1
+            },
+            {
+                "question": "What is the capital of the United States?",
+                "answer": "Washington, D.C.",
+                "difficulty": 1
+            },
+            {
+                "question": "What is the color of the sky?",
+                "answer": "Blue",
+                "difficulty": 1
+            },
+            {
+                "question": "What is the chemical symbol for water?",
+                "answer": "H2O",
+                "difficulty": 2
+            },
+            {
+                "question": "Who painted the Mona Lisa?",
+                "answer": "Leonardo da Vinci",
+                "difficulty": 2
+            },
+            {
+                "question": "What is the largest country in South America?",
+                "answer": "Brazil",
+                "difficulty": 2
+            },
+            {
+                "question": "What is the capital of Australia?",
+                "answer": "Canberra",
+                "difficulty": 3
+            },
+            {
+                "question": "What is the highest mountain in Africa?",
+                "answer": "Mount Kilimanjaro",
+                "difficulty": 3
+            },
+            {
+                "question": "What is the largest ocean in the world?",
+                "answer": "Pacific Ocean",
+                "difficulty": 3
             }
+
+
         ]
         
         self.typing_words = [
@@ -46,11 +94,27 @@ class Work(commands.Cog):
             {'word': 'discord', 'difficulty': 1.2},
             {'word': 'economy', 'difficulty': 1.3},
             {'word': 'cryptocurrency', 'difficulty': 1.5},
-            {'word': 'leaderboard', 'difficulty': 1.4}
+            {'word': 'leaderboard', 'difficulty': 1.4},
+            {'word': 'Pneumonoultramicroscopicsilicovolcanoconiosis', 'difficulty': 5},
+            {'word': 'antidisestablishmentarianism', 'difficulty': 1.7},
+            {'word': 'anime', 'difficulty': 1},
+            {'word': 'cybertruck', 'difficulty': 1.2},
+            {'word': 'hello', 'difficulty': 1.2},          
+            {"word": "quixotic", "difficulty": 3},
+            {"word": "serendipity", "difficulty": 3},
+            {"word": "onomatopoeia", "difficulty": 3},
+            {"word": "schadenfreude", "difficulty": 3},
+            {"word": "petrichor", "difficulty": 2},
+            {"word": "ephemeral", "difficulty": 2},
+            {"word": "ubiquitous", "difficulty": 2},
+            {"word": "melancholy", "difficulty": 1},
+            {"word": "nostalgia", "difficulty": 1},
+            {"word": "euphoria", "difficulty": 1}
+
         ]
 
     @commands.command(name="work")
-    @commands.cooldown(1, 3600, BucketType.user)  # 1 use per hour per user
+    @commands.cooldown(3, 60, BucketType.user)
     async def work(self, ctx: commands.Context):
         """Work to earn money through interactive mini-games"""
         user_id = ctx.author.id
@@ -140,9 +204,7 @@ class Work(commands.Cog):
             hours = int(remaining_time // 3600)
             minutes = int((remaining_time % 3600) // 60)
             seconds = int(remaining_time % 60)
-            await ctx.send(
-                f"⏳ You need to wait {hours}h {minutes}m {seconds}s before working again!"
-            )
+            pass
         else:
             # Log the error but don't raise it to prevent crashes
             print(f"Error in work command: {str(error)}")
