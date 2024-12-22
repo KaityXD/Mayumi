@@ -40,6 +40,32 @@ handler = logging.StreamHandler()
 handler.setFormatter(ColorFormatter("%(asctime)s [%(levelname)s] %(message)s"))
 
 
+# Add these classes at the top level of your file, before the FishingSystem class:
+class FishButton(nextcord.ui.Button):
+    def __init__(self, fishing_cog, original_ctx):
+        super().__init__(
+            style=nextcord.ButtonStyle.primary,
+            label="🎣 Fish Again!",
+            custom_id="fish_again"
+        )
+        self.fishing_cog = fishing_cog
+        self.original_ctx = original_ctx
+
+    async def callback(self, interaction: nextcord.Interaction):
+        if interaction.user.id != self.original_ctx.author.id:
+            await interaction.response.send_message("This button is not for you!", ephemeral=True)
+            return
+
+        # Reset cooldown and execute fishing command
+        self.original_ctx.command.reset_cooldown(self.original_ctx)
+        await interaction.response.defer()
+        await self.fishing_cog.fishing(self.original_ctx)
+
+class FishingView(nextcord.ui.View):
+    def __init__(self, fishing_cog, ctx):
+        super().__init__(timeout=180)  # 3 minute timeout
+        self.add_item(FishButton(fishing_cog, ctx))
+
 class FishingSystem(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -103,7 +129,7 @@ class FishingSystem(commands.Cog):
             tier_modifier = 0
 
             # Apply Power Relic
-            if "power_relic" in user_data:
+            if "power_relic" in user_data or "power relic" in user_data:
                 final_earnings *= self.relic_types["power_relic"]["multiplier"]
                 
             # Apply Lucky Relic
@@ -206,12 +232,12 @@ class FishingSystem(commands.Cog):
             return fish_name, base_value
 
     @commands.command(aliases=["fish"])
-    @commands.cooldown(5, 3, commands.BucketType.user)
+    @commands.cooldown(1, 20, commands.BucketType.user)
     async def fishing(self, ctx):
         try:
             user_id = ctx.author.id
             user_name = ctx.author.display_name
-            logger.info(f"--------------------\nFishing command initiated by user {user_name}")
+            logger.info(f"Fishing command initiated by user {user_name}")
             
             data = self.get_user_data(user_id)
             logger.info(f"User data retrieved: {data}")
@@ -287,8 +313,8 @@ class FishingSystem(commands.Cog):
                     inline=False
                 )
 
-            await ctx.reply(embed=embed)
-            
+            view = FishingView(self, ctx)
+            await ctx.reply(embed=embed, view=view) 
         except Exception as e:
             logger.error(f"Error in fishing command: {traceback.format_exc()}")
             await ctx.reply(f"❌ An error occurred while fishing. Please try again later.")
